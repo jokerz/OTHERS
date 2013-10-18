@@ -5,7 +5,8 @@
 # @author	Iwahase Ryo
 # @create	2012/11/30
 # @version	1.00
-# @update
+# @update   2013/10/11 add "end_api" method (disconnect db connection)
+# @updated  2013/10/18 add "image_url_4_uncertifed_profile_image" method ***** ONLY IN THIS SOURCE ******
 #******************************************************
 package SNS;
 
@@ -790,20 +791,48 @@ sub fetch_member_icon_data_distance {
 #						type		=> 3,						# type for 1->プロフ,2->写メ,3->日記
 #						id_for_type	=> $diaryId,				# id for the type above
 #						flag		=> 0,						# 0/1 0 for all 1 for selected image
+#						size		=> 1,
+#						selfflag	=> [0,1]					# 0  for yourself and 1 for other so default value is set to 1	
 #					}
 #
 #
 # @return   arrayref   [ { image_url, mosaic_url, selected_flg } ] image url
 #******************************************************
+#my $myPageImage;
 sub get_getImageUrl {
 	my ( $self, $hashobj ) = @_;
 
-	$hashobj->{type} ||= 3; # set default value to 3 (SNS)
-	$hashobj->{flag} ||= 0; # set default value to 0 (get all)
-	$hashobj->{size} ||= 1; # set default value to 1 (get all)
-	my @retobj = MyPage::Image::Method->new->getImageUrl( $hashobj->{member_data}, $hashobj->{type}, $hashobj->{id_for_type}, $hashobj->{flag}, $hashobj->{size} );
+	$hashobj->{type}		||= 3; # set default value to 3 (SNS)
+	$hashobj->{flag} 		||= 0; # set default value to 0 (get all)
+	$hashobj->{size} 		||= 1; # set default value to 1 (get all)
+	$hashobj->{selfflag}	||= 1; # set default value to 1 (get all)
+my @retobj = MyPage::Image::Method->new->getImageUrl( $hashobj->{member_data}, $hashobj->{type}, $hashobj->{id_for_type}, $hashobj->{flag}, $hashobj->{size},$hashobj->{selfflag} );
+#	my @retobj = MyPage::Image::Method->new->getImageUrl( $hashobj->{member_data}, $hashobj->{type}, $hashobj->{id_for_type}, $hashobj->{flag}, $hashobj->{size} );
+#	$myPageImage = MyPage::Image::Method->new() if !$myPageImage;
+#	my @retobj = $myPageImage->getImageUrl( $hashobj->{member_data}, $hashobj->{type}, $hashobj->{id_for_type}, $hashobj->{flag}, $hashobj->{size} );
 
 	return (\@retobj);
+}
+
+#******************************************************
+#
+#   *** THIS METHOD IS NOT WRITTEN IN the source of SNS.pm on SVN ***
+#   *** 2013/10/18 ***
+#
+# @desc			return image url for not certified profile picture
+# @param scalar 0 == woman (sns では2が女性になってるので2の場合は0してこのメソッドに渡す
+#				1 == man
+# @return		image url
+#******************************************************
+sub image_url_4_uncertifed_profile_image {
+	my ( $self, $sex ) = @_;
+	## 引数が０の場合はdefinedで判定しないとだめ
+	return unless defined $sex;
+
+	my $master										= classMasterDataAccess->new;
+	$self->{image_url_4_uncertifed_profile_image}	= $master->getNoImageUrl->{$sex};
+
+	return $self->{image_url_4_uncertifed_profile_image};
 }
 
 #******************************************************
@@ -1029,6 +1058,22 @@ sub dbhImageR {
 }
 sub dbhImageW {
     return shift->{dbhImageW};
+}
+
+#******************************************************
+# @desc     disconnect all database server connections
+# @desc     Servers are DBServerSNSDiaryFullTextSearch
+# @param    DBServerSNSDiary DBServerIMG
+# @return   
+#******************************************************
+sub disconnect_api {
+    my $self = shift;
+
+    eval {
+        my @DBH = qw/dbhR dbhFTSR dbhImageR dbhW dbhImageW/;
+        map { $self->$_->{DBHandle}->disconnect() } @DBH;
+    };
+    return $self->custom_error('HTTP_REPONSE_CODE_500') if $@;
 }
 
 #******************************************************
