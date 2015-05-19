@@ -1,0 +1,62 @@
+#!/usr/bin/perl
+
+# $Id: ,v 1.0 2015/05/19 18:50 RyoIwahase Exp $
+
+#******************************************************
+# @desc    self made port scanner 
+#
+# @access    public
+# @author    RyoIwahase
+# @create    2015/05/19
+# @update    
+# @version   1.0
+#******************************************************
+
+use strict;
+use Socket;
+
+$| = 1;
+my ($protocol, $from,  $to);
+$protocol  =  getprotobyname('tcp');
+my ($ipaddress,  $port,  $port2stop,  $logfile)  = @ARGV;
+
+#&usage if $ARGV[0] eq 'h';
+
+$ipaddress  = 'localhost' if !$ipaddress;
+$port       = 1 if !$port;
+$port2stop  = 65535 if !$port2stop;
+$logfile    = __FILE__ . 'log' if !$logfile;
+
+unless (open(LOG_FILE, ">>$logfile")) {
+    die "failed opening log file $logfile $!\n";
+}
+select((select(LOG_FILE), $| = 1)[0]);
+
+print LOG_FILE "Following ports are open on $ipaddress between $port and $port2stop \n\n";
+print "Checking $ipaddress for open ports ---- \n";
+
+for (; $port < $port2stop; $port += 1) {
+    socket(SOCKET, PF_INET, SOCK_STREAM, $protocol);
+
+    $to     = inet_aton($ipaddress);
+    $from   = sockaddr_in($port, $to);
+
+    if (!connect(SOCKET, $from)) {
+        printf("%d\r", $port);
+    } else {
+        printf("%d <- open\n", $port);
+        print LOG_FILE "$port\n";
+        close SOCKET || die "close: $!";
+    }
+}
+
+close LOG_FILE || die "close: $!";
+
+print "Port scanning done \n";
+print "Open ports for $ipaddress\n";
+
+sub usage {
+
+}
+
+__END__
