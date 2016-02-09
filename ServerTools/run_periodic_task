@@ -1,0 +1,224 @@
+#!/usr/bin/env perl
+
+# $Id: run_periodic_task.pl,v 1.0 2016/02/04 17:17 RyoIwahase Exp $
+
+
+use strict;
+use Data::Dumper;
+use Getopt::Long;
+#use Pod::Usage;
+
+use constant USAGE => <<MSG;
+	usage : run_periodic_task [-y] [-m] [-i] [-p] [-c]
+	options :
+		-y OR	--year			target year
+		-m OR	--mon				target month
+		-i OR	--id				target company id(single or multiple) or all company	
+		-p OR	--publish		to publish or not to delete serialized object
+		-c OR	--with-csv	create csv file 
+		-h OR	--help			show this help
+
+		SAMPLE: run_periodic_task -i 1 2 5 30 -y 2015 -m 12
+		SAMPLE: run_periodic_task -c
+				the above automaticaly creates command: 
+			1.curl -X -GET htttp://xxx/nfmp/mojo/royalty4/company/[1-31]/monthly/[yyyy]/[mm]?publish=-1 
+			2.curl -X -GET htttp://xxx/nfmp/mojo/royalty4/company/[1-31]/monthly/[yyyy]/[mm]?publish=1 
+				which deletes serialized object data first then create serialized object as well as PDF for all companies
+			3.bundle all pdf files in one directory and compress it as zip file
+			4.run a script "royalty2csv" which creates csv file from serialized object
+			  * important: script file name royalty2csv must be in the same directory
+MSG
+
+my $help						= 0;
+my $production_flag	= 0;
+my $target_publish;
+my $target_year;
+my $target_month;
+my @target_company;
+my $target_csv;
+
+GetOptions (
+	"help|?"	=> \$help,
+	"p:s{,}"	=> \$target_publish,
+	"y:s{,}"	=> \$target_year,
+	"m:s{,}"	=> \$target_month,
+	'i:s{1,}'	=> \@target_company,
+	"c"				=> \$target_csv,
+);
+
+die USAGE if $help;
+
+
+$target_publish				= -1;
+## Mac環境で開発してるためdate -d ''コマンドが使用できないため直接値を代入
+#$target_year			||= `(date +%Y)`; chomp $target_year;
+#$target_month			||= 1; chomp $target_month;
+## 集計対象の年と月に指定がない場合はデフォルト値として１ヶ月前を設定
+$target_year					||= `(date -d '-1 month' +%Y)`; chomp $target_year;
+$target_month					||= `(date -d '-1 month' +%m)`; chomp $target_month;
+$target_csv						||= 0;
+
+my @company						= (0 < @target_company) ? @target_company : qw/1 2 3 4 5 6 6_1 6_2 7 8 9 10 11 15 18 19 20 22 23 24 24_1 25 26 27 29 30 31/;
+my @company_all				= qw/1 2 3 4 5 6 6_1 6_2 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 24_1 25 26 27 28 29 30 31/; ## 登録されているすべての企業ID)
+my @quarterly_company	= qw/1 2 5 17 19 22 26 27/;
+
+my @domain						= ('http://m777-9.snws.jp', 'http://mb7-dev.game.mbga.jp:8080');
+my $royalty_doc_root	= '/var/www/m777';
+my $royalty_base_path	= 'nfmp/mojo/royalty4';
+
+my $curl_command			= `/usr/bin/which curl`; chomp $curl_command;
+my $zip_command				= `/usr/bin/which zip`;  chomp $zip_command;
+
+my $royalty2csv_scrip	= 'royalty2csv';
+
+## 四半期支払いの締め月と集計月と企業のマッピング
+my $quarter_month			= {
+	26	=>	[
+[ undef, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0 ],
+		2, 2, 5, 5, 5, 8, 8, 8, 11, 11, 11, 2 ],
+	1		=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	2		=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	5		=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	17	=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	19	=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	22	=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+#	24	=>	[
+#[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+#		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	27	=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+};
+
+
+#--------------------------------------------
+
+print "\nRUN publish_royalty_data which clear formerdata\n";
+
+# 1. delete serialized data
+publish_royalty_data($target_publish);
+
+print "\nwait for 0.5 second\nand RUN publish_royalty_data\n"; select(undef, undef, undef, 0.5);
+
+# 2. publish serialized data and pdf
+publish_royalty_data(1);
+
+print "\nwait for 0.5 second\nand RUN zip_pdf_directory\n"; select(undef, undef, undef, 0.5);
+
+# 3. copy pdf files and zip directory
+zip_pdf_directory({
+	year							=> $target_year,
+	month			  			=> $target_month,
+	royalty_doc_root  => $royalty_doc_root,
+	royalty_base_path => $royalty_base_path,
+	company						=> \@company,
+	quarterly_company => \@quarterly_company,
+	quarter_month			=> $quarter_month,
+});
+
+print "\nwait for 0.5 second\nand RUN run_scripts\n"; select(undef, undef, undef, 0.5);
+
+# 4. run script " royalty2csv"
+run_scripts({script => $royalty2csv_scrip});
+
+print STDOUT "\n--------------------------------------------\nSUCCESSFULLY ALL DONE\n"; 
+
+exit;
+#--------------------------------------------
+
+sub run_scripts {
+	my $options = shift;
+
+	return undef if !exists($options->{script}) or !$options->{script};
+	return undef if ! -e $options->{script};
+
+	my $exec_command = sprintf("perl %s", $options->{script});	
+	system($exec_command);
+	
+}
+
+
+sub zip_pdf_directory {
+  my $arg = shift;
+  my $monthly_pdf_dir = sprintf("%s/%s/public/pdf/%4d/%d", $arg->{royalty_doc_root}, $arg->{royalty_base_path}, $arg->{year}, $arg->{month});
+  my $quarterly_pdf_dir;
+  map {
+		if ($arg->{month} != $quarter_month->{ $_ }->[ $arg->{month} ]) {
+			my @year_add_subtract		= 
+				( 26 == $_ && 2  >= $arg->{month} )  ? (0,  0, -1) :
+				( 26 == $_ && 12 == $arg->{month} )  ? (1,  1,  0) : (0, 0, 0);
+			my $tmp = sprintf("%s/%s/public/pdf/%4d/%d", $arg->{royalty_doc_root}, $arg->{royalty_base_path}, ($arg->{year} + $year_add_subtract[0]), $quarter_month->{ $_ }->[ $arg->{month} ]);
+			$quarterly_pdf_dir->{ $tmp }  = 1;
+		}
+  } @{ $arg->{quarterly_company} };
+
+  if (-d $monthly_pdf_dir) {
+		if($quarterly_pdf_dir) {
+			map {
+			  my $command = sprintf("cp -R %s/* %s", $_, $monthly_pdf_dir);	
+			  print $command, "\n";
+				system($command);
+			} keys %{ $quarterly_pdf_dir };
+		}
+		my $chdir					= sprintf("%s/%s/public/pdf/%4d", $arg->{royalty_doc_root}, $arg->{royalty_base_path}, $arg->{year});
+		chdir $chdir;
+		my $exec_command	= sprintf("%s -r %d.zip %d", $zip_command, $arg->{month}, $arg->{month});
+		print $exec_command, "\n";
+		system($exec_command);
+	}
+}
+
+sub publish_royalty_data {
+  $target_publish = shift;
+
+  my $max_count = scalar @company;
+  for my $count (1..$max_count) {
+	# シリアライズ時は１秒、削除時は0.1秒停止する
+   	1 == $target_publish ? select(undef, undef, undef, 1.0) : select(undef, undef, undef, 0.1) ;
+
+	my $company_id		= $company[$count -1];
+    my $company_id_suffix = undef;
+   
+   	if ($company_id =~ /(^\d+)_(\d+)$/) {
+     	$company_id					= $1;
+     	$company_id_suffix	= $2;
+    }
+  
+    my $element					= defined($company_id_suffix) ? sprintf("\\&element=%d", $company_id_suffix) : '';
+    my $publish					= ( -1 == $target_publish ) ? 'publish=-1' : 'publish=1';
+    my $royalty_web_url	= sprintf("%s/%s/company/%d/monthly/%s/%d", $domain[$production_flag], $royalty_base_path, $company_id, $target_year, $target_month);
+  
+    $royalty_web_url		.= sprintf("?%s%s", $publish, $element );
+    my $exec_command		= sprintf("%s -I %s", $curl_command, $royalty_web_url);
+    
+    local $| = 1;
+    printf("COMMAND : %s", $exec_command);
+		#  print "\n";
+    system($exec_command);
+    my $progress = $count * 100 / $max_count;
+    print sprintf(" %3.0f", $progress) . "%";
+    print "=" x ($progress / 10 *2);
+    print "\r";
+    local $| = 0;
+  }
+
+}
+
+sub dmsg {
+	my $msg = shift;
+	 printf("%s %s%s", ("\n" . "-="x20 ."\n"), Dumper($msg), ("\n" . "-="x20 ."\n"));
+}
+
+__END__
