@@ -1,0 +1,246 @@
+#!/usr/bin/env perl
+
+# $Id: royalty2csv,v 1.0 2016/01/14 14:50 RyoIwahase Exp $
+
+use strict;
+use Data::Dumper;
+use utf8;
+use Encode;
+
+use Getopt::Long;
+use Pod::Usage;
+
+use constant USAGE => <<MSG;
+		usage : royalty_obj [-y] [-m] [-i]
+		options :
+			-y OR --year	target year
+			-m OR --mon		target month
+			-h OR	--help	show this help
+
+			SAMPLE: royalty_obj -y 2015 -m 12
+MSG
+
+my $help = 0;
+my $target_year;
+my $target_month;
+
+GetOptions (
+	"help|?"	=> \$help,
+	"y:s{,}"	=> \$target_year,
+	"m:s{,}"	=> \$target_month,
+#	"y:s{,}"	=> \$target_year,
+
+);
+
+die USAGE if $help;
+
+sub dmsg {
+	my $msg = shift;
+	 printf("%s %s%s", ("\n" . "-="x20 ."\n"), Dumper($msg), ("\n" . "-="x20 ."\n"));
+}
+
+# directory path below must be chagned depending on enviroment
+my $directory_path		= "/var/www/m777/nfmp/mojo/royalty4";
+my @company						= qw/9 6 6_1 6_2 31 22 27 2 26 7 19 24 24_1 3 5 11 29 30 4 20 10 1 15 25/;
+#@company = qw/1 6 6_1/;
+my @quarterly_company = qw/1 2 5 17 19 22 26 27/;
+## 四半期支払いの締め月と集計月と企業のマッピング
+my $quarter_month			= {
+	26	=>	[
+[ undef, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0 ],
+		2, 2, 5, 5, 5, 8, 8, 8, 11, 11, 11, 2 ],
+	1		=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	2		=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	5		=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	17	=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	19	=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	22	=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+#	24	=>	[
+#[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+#		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+	27	=>	[
+[ undef, 0, 1, 2, 0, 1, 2, 0, 1, 2, 0, 1, 2 ],
+		3, 3, 3, 6, 6, 6, 9, 9,  9,  12, 12, 12 ],
+};
+
+my @columns_name		= (
+	'取引先CD',
+	'取引先名',
+	'デバイスID',
+	'デバイス',
+	'部門コード',
+	'部門',
+	'PJコード',
+	'PJ名',
+	'ロイヤリティ額（少数第1位切り捨て）',
+	'MG有無',
+#	'備考',
+);
+
+my @ILM = ('MG無し', 'MG有り');
+$target_year					||= `(date -d '-1 month' +%Y)`; chomp $target_year;
+$target_month					||= `(date -d '-1 month' +%m)`; chomp $target_month;
+
+my %carrier_name				= ( 'I' => 'iOS', 'G' => 'Android', 'F' => 'FeaturePhone' );
+my $csv_file						= sprintf("%s/public/pdf/%d/%d.csv", $directory_path, $target_year, $target_month);
+my $target_royalty_obj	= sprintf("%s/public/pdf/%d/%d.obj", $directory_path, $target_year, $target_month);
+my $target_obj;
+my ($obj, $royalty_obj);
+
+my $check = openFileIntoScalar({
+			file	=> $csv_file,
+			mode	=> 'w',
+			columns	=> join(',', @columns_name),
+		});
+
+eval {
+ 	$royalty_obj	= publishObj({ file => $target_royalty_obj });
+};
+if ($@) {
+	print " no object file found\n";
+}
+
+## 20160201 とにかくカラム調整のため全部にMGのフラグ
+my $hasMG = 1;
+
+foreach my $company_id ( @company ) {
+	
+	my $index_pointer4obj	= undef;
+	my $company_id_suffix = undef;
+	my $DATABYCARRIER			= { 'G' => [], 'I' => [] };
+
+	if ($company_id =~ /(^\d+)_(\d+)$/) {
+		$company_id					= $1;
+		$company_id_suffix	= $2;
+		$target_obj					= sprintf("%s/tmp/royalty/%d/%02d%02d_%d.obj", $directory_path, $target_year, $company_id, $target_month, $company_id_suffix);
+		#dmsg({line => __LINE__, month =>$target_month, company_id => $company_id, company_id_suffix => $company_id_suffix, target_obj => $target_obj});
+	}
+	elsif ( grep($_ == $company_id, @quarterly_company) ) {
+		my @year_add_subtract		= 
+			( 26 == $company_id && 2  >= $target_month )  ? (0,  0, -1) :
+			( 26 == $company_id && 12 == $target_month )  ? (1,  1,  0) : (0, 0, 0);
+
+			$target_obj					= sprintf("%s/tmp/royalty/%d/%02d%02d.obj", $directory_path, ( $target_year + $year_add_subtract[0] ), $company_id, $quarter_month->{ $company_id }->[ $target_month ]);
+			$index_pointer4obj	= $quarter_month->{ $company_id }->[0]->[ $target_month ];
+
+			#dmsg({line => __LINE__, month =>$target_month, company_id => $company_id, obj => $target_obj});
+	}
+	else {
+		$target_obj	= sprintf("%s/tmp/royalty/%d/%02d%02d.obj", $directory_path, $target_year, $company_id, $target_month);
+
+		#dmsg({line => __LINE__, month =>$target_month, company_id => $company_id, obj => $target_obj});
+	}
+
+	$index_pointer4obj = 0 unless defined $index_pointer4obj;
+
+	eval {
+		$obj	= publishObj({ file => $target_obj });
+	};
+	if ($@) {
+		print "\n no object file $target_obj found\n";
+	}
+
+	map {
+		my $scope = $_;
+		my $mg_flag;
+	 if ( 0 < scalar @{ $obj->[ $index_pointer4obj ]{save_guarantee} } ) {
+		 map { 
+			my $index = $_;
+			$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{mg_flag}
+	= ( $company_id == $obj->[ $index_pointer4obj ]{save_guarantee}[$index]->{company_id}
+				&& $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} == $obj->[ $index_pointer4obj ]{save_guarantee}[$index]->{appli_id}
+			 	&& $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} eq $obj->[ $index_pointer4obj ]{save_guarantee}[$index]->{carrier}
+				) ? $ILM[1]: $ILM[0];
+
+							#) ? $obj->[ $index_pointer4obj ]{save_guarantee}[$index]->{balance} : 0;
+
+			} 0..$#{$obj->[ $index_pointer4obj ]{save_guarantee}};
+		} else {
+			$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{mg_flag} = $ILM[0];
+		}
+
+		push @{ $DATABYCARRIER->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } },  sprintf("\n%s,%s,%s,%s,%s,%s,%s,%s,%d,%s",
+						$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{client_code},
+					decode('utf8', 
+						$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{company_name}
+					),
+						$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{device_id},
+						$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{device},
+						$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{section_code},
+					decode('utf8', 
+						$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{section}
+					),
+						(
+						$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{project_code}
+						. 
+						$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{device_id}),
+					decode('cp932',
+						$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{appli_name}),
+					($obj->[ $index_pointer4obj ]->{appli_list}->[$scope]->{game_royalty}+$obj->[ $index_pointer4obj ]->{appli_list}->[$scope]->{gacha_royalty}->{sum_royalty}),
+					$royalty_obj->{ $company_id }->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{carrier} } ->{ $obj->[$index_pointer4obj]->{appli_list}->[$scope]->{appli_id} }->{mg_flag},
+					#	$ILM[$mg_flag],
+					);
+
+#				( 0 < $obj->[ $index_pointer4obj ]{save_guarantee}[0]->{fee} ? $minimum_guarantee[1] : $minimum_guarantee[0] ),
+	} 0..$#{ $obj->[$index_pointer4obj]->{appli_list} };
+#dmsg({ msg => $DATABYCARRIER });
+	openFileIntoScalar({
+			file => $csv_file,
+			mode => 'ap',
+			value => $DATABYCARRIER,
+		});
+}
+
+
+sub openFileIntoScalar {
+	my $arg = shift;
+	my $rv;
+  my $mode = { w => '>', ap =>'>>', };
+	return if !defined $arg->{file};
+
+	local $/;
+	local *F;
+
+	if (exists($arg->{mode}) and ('w' eq $arg->{mode} or 'ap' eq $arg->{mode}) ) {
+
+		use NKF;
+
+		open (F, "$mode->{$arg->{mode}} $arg->{file}\0");
+
+		if(exists($arg->{columns})) {
+				no strict 'refs';
+				print F nkf('-s', $arg->{columns});
+		}
+		map { print F nkf('-s', $_) } @{ $arg->{value}->{'G'} };
+		map { print F nkf('-s', $_) } @{ $arg->{value}->{'I'} };
+
+		close (F);
+	} else {
+		open (F, "< $arg->{file}\0") || return;
+		$rv->{read_value} = <F>;
+		close (F);
+	}
+	
+	return $rv;
+}
+
+sub publishObj {
+  my $obj = shift || return undef;
+  use Storable qw( nstore retrieve );
+  return( exists( $obj->{obj} ) ? nstore $obj->{obj}, $obj->{file} : retrieve $obj->{file} );
+}
+
+__END__
+

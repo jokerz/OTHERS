@@ -56,7 +56,7 @@ $target_publish				= -1;
 ## 集計対象の年と月に指定がない場合はデフォルト値として１ヶ月前を設定
 $target_year					||= `(date -d '-1 month' +%Y)`; chomp $target_year;
 $target_month					||= `(date -d '-1 month' +%m)`; chomp $target_month;
-$target_csv						||= 0;
+$target_csv						||= undef;
 
 my @company						= (0 < @target_company) ? @target_company : qw/1 2 3 4 5 6 6_1 6_2 7 8 9 10 11 15 18 19 20 22 23 24 24_1 25 26 27 29 30 31/;
 my @company_all				= qw/1 2 3 4 5 6 6_1 6_2 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 24_1 25 26 27 28 29 30 31/; ## 登録されているすべての企業ID)
@@ -104,7 +104,6 @@ my $quarter_month			= {
 
 
 #--------------------------------------------
-
 print "\nRUN publish_royalty_data which clear formerdata\n";
 
 # 1. delete serialized data
@@ -115,9 +114,14 @@ print "\nwait for 0.5 second\nand RUN publish_royalty_data\n"; select(undef, und
 # 2. publish serialized data and pdf
 publish_royalty_data(1);
 
+print "\nwait for 0.5 second\nand RUN run_scripts\n" if $target_csv; select(undef, undef, undef, 0.5) if $target_csv;
+
+# 3. run script " royalty2csv"
+run_scripts({script => $royalty2csv_scrip}) if $target_csv;
+
 print "\nwait for 0.5 second\nand RUN zip_pdf_directory\n"; select(undef, undef, undef, 0.5);
 
-# 3. copy pdf files and zip directory
+# 4. copy pdf files and zip directory
 zip_pdf_directory({
 	year							=> $target_year,
 	month			  			=> $target_month,
@@ -127,11 +131,6 @@ zip_pdf_directory({
 	quarterly_company => \@quarterly_company,
 	quarter_month			=> $quarter_month,
 });
-
-print "\nwait for 0.5 second\nand RUN run_scripts\n"; select(undef, undef, undef, 0.5);
-
-# 4. run script " royalty2csv"
-run_scripts({script => $royalty2csv_scrip});
 
 print STDOUT "\n--------------------------------------------\nSUCCESSFULLY ALL DONE\n"; 
 
@@ -183,10 +182,12 @@ sub zip_pdf_directory {
 sub publish_royalty_data {
   $target_publish = shift;
 
+	my $wait_second = 1 == $target_publish ? "1.0" : "0.1"; 
   my $max_count = scalar @company;
   for my $count (1..$max_count) {
 	# シリアライズ時は１秒、削除時は0.1秒停止する
-   	1 == $target_publish ? select(undef, undef, undef, 1.0) : select(undef, undef, undef, 0.1) ;
+		select(undef, undef, undef, $wait_second);
+		#1 == $target_publish ? select(undef, undef, undef, 1.0) : select(undef, undef, undef, 0.1) ;
 
 	my $company_id		= $company[$count -1];
     my $company_id_suffix = undef;
